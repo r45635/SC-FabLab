@@ -7,7 +7,9 @@
  SC Fab Lab
  Written by Vincent, public domain 
 */
-
+#include <avr/sleep.h>
+#include <avr/wdt.h>
+#include <avr/power.h>
 #include <DHT.h>      // DHT library
 #include <OneWire.h>  // OneWire Library
 #include <DallasTemperature.h>  // DallasTemperature Library
@@ -16,33 +18,53 @@
 #include "RF24.h"
 #include "printf.h"
 #include "sensor_payload.h"   // Payload Definition, enclosed in MaStation Git Repository
-#include "Narcoleptic.h"
 
-#define SOILPIN   A0    // Signal Pin For Soil Moisture
-                        // Nice Example here : 
-#define DHTPIN    2     // Signal Pin for DHT
-#define DSBPIN    5     // Signal Pin for DSB 
+#define SOILPIN         A0    // Signal Pin For Soil Moisture
+#define SOILPIN_POWER   9    // SignalPower Pin For Soil Moisture
+#define DHTPIN          2     // Signal Pin for DHT
+#define DHTPIN_POWER    4     // Signal Power Pin for DHT
+#define DSBPIN          5     // Signal Pin for DSB 
                         // Note: Make sure to have 47k pull up between Signal and VDD.
+#define DSBPIN_POWER    6     // Signal Power Pin for DSB                         
 #define NRF24L01_CE_PIN   7    // nRF24L01 SPI CE Pin 
 #define NRF24L01_CSN_PIN  8   // nRF24L01 SPI CSN Pin 
+#define NRFPIN_POWER          10  // Signal Pin Power for NRF24
 
 #define DHTTYPE DHT21   // DHT 21 (AM2301)
 
-OneWire oneWire(DSBPIN);
-DallasTemperature dsb(&oneWire);
+/********************************************************************************
+* Initialisation of the differents module
+*  - DSB => need OneWire Connection, DallasTemperature lib
+*  - DHT => need DHT lib
+*  - RF24 => Use SPI, need of nrf24 lib
+*/
+// DSB INIT
+OneWire ds(DSBPIN);
+//DallasTemperature dsb(&oneWire);
+// DHT INIT
 DHT dht(DHTPIN, DHTTYPE, 3); // AVR_SPEED=3 for 8Mhz Else 6 For 16Mhz
-
+// RF24 INIT
 RF24 radio(NRF24L01_CE_PIN, NRF24L01_CSN_PIN);
-const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL }; // Channel to use
-#define NRF24_CHANNEL 12
-#define NRF24_SPEED  RF24_250KBPS  // RF24_250KBPS for 250kbs, RF24_1MBPS for 1Mbps, or RF24_2MBPS for 2Mbps
 
+/**********************************************************************************
+ - Paylaod init
+ - RF24 Configuration
+*/
 Payload payload = (Payload) {
   SENSOR_STATION
 };
+const uint64_t pipes[2] = { 0xF0F0F0F0E1LL, 0xF0F0F0F0D2LL }; // Channel to use
 #define STATION_ID 1 // Unique Identifier of actual Station
+#define PAYLOAD_NODE 1 // Only one node for this sation demo
+#define NRF24_CHANNEL 12
+#define NRF24_SPEED  RF24_250KBPS  // RF24_250KBPS for 250kbs, RF24_1MBPS for 1Mbps, or RF24_2MBPS for 2Mbps
 
+int start_counter = 10; // Send data all minutes during 10 minutes
+int normal_counter = 15; // Send data all 15 minutes
 
+/* long readVcc() *****************************************************************
+  - return the internal Vcc value in mV
+*/
 long readVcc() {
   long result;
   // Read 1.1V reference against AVcc
@@ -56,14 +78,31 @@ long readVcc() {
   return result;
 }
 
+void power_on (int powerPin) {
+  pinMode(powerPin,OUTPUT);
+  digitalWrite(powerPin,HIGH);
+  delay(1000);
+}
 
-void print_dht() {
+void power_off (int powerPin) {
+  pinMode(powerPin,OUTPUT);
+  digitalWrite(powerPin,LOW);
+}
+
+
+/*********************************************************************************
+ print_dht()
+  - print dht sensor values
+*/
+void print_dht() { 
+  //power_on(DHTPIN_POWER);  // power on module
+  delay(2000); // let time to warm up the DHT
   float h = dht.readHumidity();
   // Read temperature as Celsius
   float t = dht.readTemperature();
   // Read temperature as Fahrenheit
   float f = dht.readTemperature(true);
-
+  //power_off(DHTPIN_POWER);  // Power Off Module
   // Check if any reads failed and exit early (to try again).
   if (isnan(h) || isnan(t) || isnan(f)) {
     Serial.println("Failed to read from DHT sensor!");
@@ -93,10 +132,110 @@ void print_dht() {
 }
 
 void print_dsb() {
-  dsb.requestTemperatures();
-  float tempC = dsb.getTempCByIndex(0);
-  float tempF = dsb.toFahrenheit(tempC);
   
+  //power_on(DSBPIN_POWER);  // power on module  dsb.requestTemperatures();
+
+
+  byte i;
+  byte present = 0;
+  byte type_s;
+  byte data[12];
+  byte addr[8];
+  float celsius, fahrenheit;
+  
+  if ( !ds.search(addr)) {
+    Serial.println("No more addresses.");
+    Serial.println();
+    ds.reset_search();
+    delay(250);
+    return;
+  }
+  
+  /*Serial.print("ROM =");
+  for( i = 0; i < 8; i++) {
+    Serial.write(' ');
+    Serial.print(addr[i], HEX);
+  }*/
+
+  if (OneWire::crc8(addr, 7) != addr[7]) {
+      Serial.println("CRC is not valid!");
+      return;
+  }
+  /*Serial.println();*/
+ 
+  // the first ROM byte indicates which chip
+  switch (addr[0]) {
+    case 0x10:
+      Serial.println("  Chip = DS18S20");  // or old DS1820
+      type_s = 1;
+      break;
+    case 0x28:
+      Serial.println("  Chip = DS18B20");
+      type_s = 0;
+      break;
+    case 0x22:
+      Serial.println("  Chip = DS1822");
+      type_s = 0;
+      break;
+    default:
+      Serial.println("Device is not a DS18x20 family device.");
+      return;
+  } 
+
+  ds.reset();
+  ds.select(addr);
+  ds.write(0x44, 1);        // start conversion, with parasite power on at the end
+  
+  delay(1000);     // maybe 750ms is enough, maybe not
+  // we might do a ds.depower() here, but the reset will take care of it.
+  
+  present = ds.reset();
+  ds.select(addr);    
+  ds.write(0xBE);         // Read Scratchpad
+
+  /*Serial.print("  Data = ");
+  Serial.print(present, HEX);
+  Serial.print(" ");*/
+  for ( i = 0; i < 9; i++) {           // we need 9 bytes
+    data[i] = ds.read();
+    /*Serial.print(data[i], HEX);
+    Serial.print(" ");*/
+  }
+  /*Serial.print(" CRC=");
+  Serial.print(OneWire::crc8(data, 8), HEX);
+  Serial.println();*/
+
+  // Convert the data to actual temperature
+  // because the result is a 16 bit signed integer, it should
+  // be stored to an "int16_t" type, which is always 16 bits
+  // even when compiled on a 32 bit processor.
+  int16_t raw = (data[1] << 8) | data[0];
+  if (type_s) {
+    raw = raw << 3; // 9 bit resolution default
+    if (data[7] == 0x10) {
+      // "count remain" gives full 12 bit resolution
+      raw = (raw & 0xFFF0) + 12 - data[6];
+    }
+  } else {
+    byte cfg = (data[4] & 0x60);
+    // at lower res, the low bits are undefined, so let's zero them
+    if (cfg == 0x00) raw = raw & ~7;  // 9 bit resolution, 93.75 ms
+    else if (cfg == 0x20) raw = raw & ~3; // 10 bit res, 187.5 ms
+    else if (cfg == 0x40) raw = raw & ~1; // 11 bit res, 375 ms
+    //// default is 12 bit resolution, 750 ms conversion time
+  }
+  celsius = (float)raw / 16.0;
+  fahrenheit = celsius * 1.8 + 32.0;
+  /*Serial.print("  Temperature = ");
+  Serial.print(celsius);
+  Serial.print(" Celsius, ");
+  Serial.print(fahrenheit);
+  Serial.println(" Fahrenheit");*/
+
+  
+  float tempC = celsius; //dsb.getTempCByIndex(0);
+  float tempF = fahrenheit; //dsb.toFahrenheit(tempC);
+  //power_off(DSBPIN_POWER);  // Power Off Module
   Serial.print("DSB:\t");
   Serial.print("Temperature: "); 
   Serial.print(tempC);
@@ -111,7 +250,10 @@ void print_dsb() {
 }
 
 void print_soil() {
+  
+  //power_on(SOILPIN_POWER);  // power on module
   int soilvalue = analogRead(SOILPIN);
+  //power_off(SOILPIN_POWER);  // power off module
   Serial.print("SOIL:\t");
   Serial.print(soilvalue);
   Serial.print("\t");
@@ -125,7 +267,20 @@ void print_soil() {
   payload.data.SENSOR_SOIL.status = 0;
   doSendMsg(); 
 }
-  
+
+void print_station() {  
+  payload.type =  SENSOR_STATION;
+  uint16_t vcc = (uint16_t) readVcc();
+  payload.data.SENSOR_STATION.powerVoltage = vcc;
+  payload.data.SENSOR_STATION.status = 0;
+  Serial.print("STATION:\t");
+  Serial.print(payload.stationId);
+  Serial.print("\t");
+  Serial.print("Vcc:");
+  Serial.print(vcc);
+  Serial.print("\t");
+  doSendMsg();
+}
 
 bool doSendMsg()
 {
@@ -138,17 +293,31 @@ bool doSendMsg()
   else {
     printf("NOK ");
   }
-  printf("Tr %d bytes / max %u -> [%u/%u/%u]\n", sizeof(payload), radio.getPayloadSize(), done, true, radio.isAckPayloadAvailable());
+  printf("Tr %d bytes/ max %u -> [%u/%u/%u]\n", sizeof(payload), radio.getPayloadSize(), done, true, radio.isAckPayloadAvailable());
   radio.startListening();
 }
 
-void setup() {
-  Serial.begin(57600); 
-  Serial.println("SC Fab Lab Test !");
-  dht.begin(); // DHT Initialisation
-  dsb.begin(); // DSB Initialisation
-  delay(2000); // Necessary Warm up
-  printf_begin(); // Necessary functio initialisation
+/*ISR (WDT_vect) 
+{ 
+  wdt_disable(); //désactive le watchdog 
+}*/
+
+void mywatchdogenable() 
+{ 
+  MCUSR = 0; 
+  WDTCSR = _BV (WDCE) | _BV (WDE); 
+  WDTCSR = _BV (WDIE) | _BV (WDP3) | _BV (WDP0); //délai de 8 secondes 
+  wdt_reset(); 
+  //ADCSRA = 0; //désactive ADC 
+  set_sleep_mode (SLEEP_MODE_PWR_DOWN); 
+  sleep_enable(); 
+  MCUCR = _BV (BODS) | _BV (BODSE); 
+  MCUCR = _BV (BODS); 
+  sleep_cpu(); 
+  sleep_disable(); 
+}
+
+void setupNRF24() {
   // NRF24 init
   radio.begin(); // Setup and configure 2.4ghz rf radio
   radio.setRetries(5, 15);
@@ -162,29 +331,64 @@ void setup() {
   radio.startListening();
   printf("//NRF24 Module Sensor Enabled.\n");
   radio.printDetails();
+  payload.stationId = STATION_ID;
   payload.type =  SENSOR_STATION;
   payload.version = PAYLOAD_VERSION; // Version de Payload from sensor_payload.h
-  payload.node = 1; // Only one node in this station
-  payload.data.SENSOR_STATION.stationId = 100;
-  payload.data.SENSOR_STATION.powerVoltage = 5 ;
-  payload.data.SENSOR_STATION.status = 100;
-  doSendMsg();  
+  payload.node = PAYLOAD_NODE; // Only one node in this station 
+}
+
+void setup() {
+  Serial.begin(57600); 
+  power_on(DHTPIN_POWER);  // power on module
+  power_on(DSBPIN_POWER);  // power on module
+  power_on(SOILPIN_POWER);  // power on module
+  power_on(NRFPIN_POWER);  // power on module  
+  Serial.println("SC Fab Lab Test !");
+  delay(5000); // Necessary Warm up
+  dht.begin(); // DHT Initialisation
+  //dsb.begin(); // DSB Initialisation
+  printf_begin(); // Necessary functio initialisation
+  setupNRF24();
+  print_station(); 
 }
 
 
 void loop() {
   // Wait a few seconds between measurements.
-  //delay(180000);
-   Narcoleptic.delay(300000); // milisecond
+  power_on(DHTPIN_POWER);  // power on module
+  power_on(DSBPIN_POWER);  // power on module
+  power_on(SOILPIN_POWER);  // power on module
+  power_on(NRFPIN_POWER);  // power on module    
+  delay(5000);  // warm up
+  setupNRF24();
+  delay(1000);
+  radio.powerUp(); //alimente le module nrf24l01+ 
+  print_station();  
   print_dht();
   print_dsb();
   print_soil();
-  Serial.println();
-  payload.type =  SENSOR_STATION;
-  payload.node = 1;
-  payload.data.SENSOR_STATION.stationId = 99;
-  uint16_t vcc = (uint16_t) readVcc();
-  payload.data.SENSOR_STATION.powerVoltage = vcc;
-  payload.data.SENSOR_STATION.status = 99;
-  doSendMsg();
+  print_station(); 
+  delay(2000);
+  Serial.println("Go to Bed ..."); 
+  delay(1000);
+  radio.powerDown();
+  power_adc_disable();
+  power_off(DHTPIN_POWER);  // Power Off Module
+  power_off(DSBPIN_POWER);  // Power Off Module
+  power_off(SOILPIN_POWER);  // Power Off Module
+  power_off(NRFPIN_POWER);  // Power Off Module  
+  //power_all_disable ();   // turn off all modules
+  if (start_counter > 0) {
+    for (int i=0; i < 1; i++) {//mise en veille pendant 64 secondes 
+      mywatchdogenable();
+    } 
+    start_counter--;
+  } else {
+    for (int i=0; i < (8*normal_counter); i++) {//mise en veille pendant 64 secondes 
+      mywatchdogenable();
+    } 
+  }
+  power_adc_enable();
+  //power_all_enable();
+  delay(2500); 
 }

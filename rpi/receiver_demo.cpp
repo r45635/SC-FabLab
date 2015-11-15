@@ -105,6 +105,8 @@ void setup(void){
 		if (!mysql_query(mysql1, SQLstring)) { printf("SQL SENSOR_SOIL Table is Ok: %s\n",SQLstring); }  else { printf("SQL SENSOR_SOIL NOk: %s\n",SQLstring); printf("%s\n", mysql_error(mysql1)); }
 		sprintf(SQLstring,"CREATE TABLE IF NOT EXISTS SENSOR_DSB (timestamp DATETIME, temperature FLOAT);");
 		if (!mysql_query(mysql1, SQLstring)) { printf("SQL SENSOR_DSB Table is Ok: %s\n",SQLstring); }  else { printf("SQL SENSOR_DSB NOk: %s\n",SQLstring); printf("%s\n", mysql_error(mysql1)); }
+		sprintf(SQLstring,"CREATE TABLE IF NOT EXISTS SENSOR_STATION (timestamp DATETIME, id INTEGER, vcc INTEGER);");
+		if (!mysql_query(mysql1, SQLstring)) { printf("SQL SENSOR_STATION Table is Ok: %s\n",SQLstring); }  else { printf("SQL SENSOR_STATION NOk: %s\n",SQLstring); printf("%s\n", mysql_error(mysql1)); }
 		}
 	radio.startListening();
 	printf("\nNow Listening...\n");
@@ -143,6 +145,7 @@ void loop(void) {
 		case SENSOR_STATION:
 			printf("SENSOR_STATION:");
 			printf("packet %d:%d ID:%u PowerVoltage:%u status:%u \n", len, sizeof(payload), payload.data.SENSOR_STATION.stationId, payload.data.SENSOR_STATION.powerVoltage, payload.data.SENSOR_STATION.status);
+			sprintf(SQLstring,"INSERT INTO SENSOR_STATION VALUES(NOW(),%d, %d)",payload.data.SENSOR_STATION.stationId, payload.data.SENSOR_STATION.powerVoltage);			
 			break;
 		default:
 			printf("Unknown message.\n");
