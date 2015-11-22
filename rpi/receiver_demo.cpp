@@ -16,7 +16,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <iostream>
-#include <RF24/RF24.h>
+#include "./RF24.h"
 #include "sensor_payload.h"
 
 
@@ -83,16 +83,16 @@ void setup(void){
 	//Prepare the radio module
 	printf("\nPreparing NRF24L01 interface\n");
 	radio.begin();
+	radio.enableDynamicPayloads();
 	radio.setRetries( 5, 15);
 	radio.setChannel(NRF24_CHANNEL);
 	radio.setDataRate(NRF24_SPEED);
 	radio.enableAckPayload();
 	//radio.disableCRC();
 	//radio.setAutoAck(true);
-	radio.enableDynamicPayloads();
     radio.openWritingPipe(pipes[1]);
     radio.openReadingPipe(1,pipes[0]);
-
+	radio.openReadingPipe(2,pipes[1]);
 	radio.printDetails();
 	printf("\nPreparing MySQL interface.\n");
 	// Connect to MySQL
@@ -122,6 +122,8 @@ void loop(void) {
 		radio.read(&payload, len);	// Read the payload
 		printf("%d:",pipeNo); 		// Display the Pipe Channel
 		sprintf(SQLstring,";");		// Initialise SQLString to a default value "nothing"
+		time_t clk = time(NULL);
+        printf("%s", ctime(&clk));
 		switch(payload.type) {    
 		case SENSOR_DHT:
 			printf("SENSOR_DHT:");
